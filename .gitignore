@@ -3,7 +3,7 @@
 __pycache__/
 
 # Virtual environment
-.venv/
+venv/
 
 # Excel / CSV files (optional)
 pension_data.xlsx
