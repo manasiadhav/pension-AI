@@ -12,7 +12,7 @@ Base.metadata.create_all(bind=engine)
 # ---------------------------
 # Excel file path (absolute or relative)
 # ---------------------------
-EXCEL_FILE = r"C:\Users\marya\OneDrive\Desktop\pension_data.xlsx"
+EXCEL_FILE = r"D:\Usecase 5.xlsx"
 
 def import_data():
     db: Session = SessionLocal()
@@ -42,7 +42,33 @@ def import_data():
                 db.commit()
                 db.refresh(user)
 
-            # 2️⃣ Create pension data
+            # 2️⃣ Clean transaction_date
+            transaction_date_str = str(row.get("Transaction_Date")).strip()
+            if transaction_date_str in ["", "########"]:
+                transaction_date = None
+            else:
+                try:
+                    transaction_date = pd.to_datetime(transaction_date_str)
+                except Exception:
+                    transaction_date = None
+
+            # 2️⃣ Clean time_of_transaction
+            time_of_transaction_str = str(row.get("Time_of_Transaction")).strip()
+            if time_of_transaction_str in ["", "########"]:
+                time_of_transaction = None
+            else:
+                try:
+                    # Try to parse as full datetime
+                    pd_time = pd.to_datetime(time_of_transaction_str, errors='coerce')
+                    # Only use if it's a full datetime, otherwise set None
+                    if pd_time is pd.NaT or len(time_of_transaction_str.split(":")) == 3 and len(time_of_transaction_str.split(" ")) == 1:
+                        time_of_transaction = None
+                    else:
+                        time_of_transaction = pd_time
+                except Exception:
+                    time_of_transaction = None
+
+            # 3️⃣ Create pension data
             pension = models.PensionData(
                 user_id=user.id,
                 age=int(row.get("Age") or 0),
@@ -70,7 +96,7 @@ def import_data():
                 survivor_benefits=row.get("Survivor_Benefits"),
                 transaction_id=row.get("Transaction_ID"),
                 transaction_amount=float(row.get("Transaction_Amount") or 0.0),
-                transaction_date=row.get("Transaction_Date"),
+                transaction_date=transaction_date,
                 suspicious_flag=row.get("Suspicious_Flag"),
                 anomaly_score=float(row.get("Anomaly_Score") or 0.0),
                 marital_status=row.get("Marital_Status"),
@@ -95,7 +121,7 @@ def import_data():
                 ip_address=row.get("IP_Address"),
                 device_id=row.get("Device_ID"),
                 geo_location=row.get("Geo_Location"),
-                time_of_transaction=row.get("Time_of_Transaction"),
+                time_of_transaction=time_of_transaction,
                 transaction_pattern_score=float(row.get("Transaction_Pattern_Score") or 0.0),
                 previous_fraud_flag=row.get("Previous_Fraud_Flag"),
                 account_age=int(row.get("Account_Age") or 0)
