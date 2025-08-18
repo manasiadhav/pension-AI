@@ -1,10 +1,10 @@
 # File: app/workflow.py
-from typing import TypedDict, List
+from typing import TypedDict, List, Annotated, Sequence
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode
 from langchain_google_genai import ChatGoogleGenerativeAI
 from functools import partial
+from langgraph.graph.message import add_messages
 
 # Import all our modular components
 from .tools.tools import all_pension_tools
@@ -16,10 +16,11 @@ from .agents.supervisor import create_supervisor_chain
 
 
 # --- State Definition (Now includes intermediate_steps) ---
-class AgentState(TypedDict):
-    messages: List[BaseMessage]
+class AgentState(TypedDict, total=False):
+    messages: Annotated[Sequence[BaseMessage], add_messages]
     next: str
     intermediate_steps: List[BaseMessage]
+    turns: int
 
 
 # --- Graph Builder Function ---
@@ -39,38 +40,89 @@ def build_agent_workflow():
 
     # --- Supervisor Node ---
     def supervisor_node(state: AgentState):
-        # Pass the full messages list instead of just string content
-        response = supervisor_chain_runnable.invoke({"messages": state["messages"]})
-        return {"next": response.next}
+        resp = supervisor_chain_runnable.invoke({"messages": state["messages"]})
+        if isinstance(resp, dict):
+            next_value = resp.get("next") or resp.get("output") or resp.get("text")
+        else:
+            next_value = getattr(resp, "next", None) or (resp if isinstance(resp, str) else None)
+        # Increment loop counter to avoid infinite routing
+        new_turns = int(state.get("turns", 0)) + 1
+        if new_turns >= 8:
+            next_value = "FINISH"
+        if not next_value:
+            next_value = "FINISH"
+        return {"next": next_value, "turns": new_turns}
 
     # --- Generic Agent Runner ---
     def agent_node(state: AgentState, agent_runnable):
-        last_user_message = next(
-            (msg for msg in reversed(state["messages"]) if isinstance(msg, HumanMessage)),
-            None
-        )
-        if not last_user_message:
-            return {"messages": state["messages"] + [AIMessage(content="⚠️ No user message found to process.")]}
+        # Find the latest user message content, supporting both HumanMessage and tuple-style ("user", text)
+        last_user_text = None
+        for msg in reversed(state["messages"]):
+            if isinstance(msg, HumanMessage):
+                last_user_text = msg.content
+                break
+            # Support tuple/dict-like messages e.g., ("user", "..."), {"role":"user","content":"..."}
+            if isinstance(msg, tuple) and len(msg) >= 2 and str(msg[0]).lower() in ("user", "human"):
+                last_user_text = msg[1]
+                break
+            if isinstance(msg, dict) and str(msg.get("role", "")).lower() in ("user", "human"):
+                last_user_text = msg.get("content")
+                break
+
+        if not last_user_text:
+            return {"messages": list(state["messages"]) + [AIMessage(content="⚠️ No user message found to process.")]}
 
         result = agent_runnable.invoke({
-            "input": last_user_message.content,
-            "agent_scratchpad": state["intermediate_steps"]
+            "input": last_user_text
         })
 
-        # Normalize result into an AIMessage
-        if isinstance(result, str):
-            result_msg = AIMessage(content=result)
-        elif isinstance(result, dict) and "output" in result:
-            result_msg = AIMessage(content=result["output"])
-        else:
-            result_msg = AIMessage(content=str(result))
+        # Normalize result into messages and propagate intermediate steps (tools used)
+        new_messages: List[BaseMessage] = list(state["messages"])  # type: ignore[arg-type]
+        new_intermediate_steps = list(state.get("intermediate_steps", []))
 
-        return {"messages": state["messages"] + [result_msg]}
+        final_text = None
+        tools_summary = None
+
+        if isinstance(result, str):
+            final_text = result
+        elif isinstance(result, dict):
+            final_text = result.get("output") or result.get("content") or result.get("text")
+            steps_result = result.get("intermediate_steps")
+            if steps_result:
+                # steps_result is typically a list of (AgentAction, observation) tuples
+                try:
+                    tools_summary = []
+                    for action, observation in steps_result:
+                        tool_name = getattr(action, "tool", None) or getattr(action, "tool_name", None) or "tool"
+                        tool_input = getattr(action, "tool_input", None) or getattr(action, "input", None)
+                        tools_summary.append(f"{tool_name}({tool_input}) -> {str(observation)[:200]}")
+                    new_intermediate_steps.extend(steps_result)
+                    tools_summary = "\n".join(tools_summary)
+                except Exception:
+                    pass
+        else:
+            final_text = str(result)
+
+        if final_text:
+            new_messages.append(AIMessage(content=final_text))
+        if tools_summary:
+            new_messages.append(AIMessage(content=f"[Tools executed]\n{tools_summary}"))
+
+        updates = {"messages": new_messages}
+        if new_intermediate_steps:
+            updates["intermediate_steps"] = new_intermediate_steps
+        return updates
 
     # --- Summarizer Node ---
     def summarizer_node(state: AgentState):
         summary = summarizer_chain_runnable.invoke({"messages": state["messages"]})
-        return {"messages": state["messages"] + [AIMessage(content=summary)]}
+        if isinstance(summary, str):
+            summary_text = summary
+        elif isinstance(summary, dict):
+            summary_text = summary.get("output") or summary.get("content") or summary.get("text") or str(summary)
+        else:
+            summary_text = getattr(summary, "content", None) or str(summary)
+        return {"messages": state["messages"] + [AIMessage(content=summary_text)]}
 
     # --- Build the graph ---
     workflow = StateGraph(AgentState)
@@ -81,7 +133,6 @@ def build_agent_workflow():
     workflow.add_node("fraud_detector", partial(agent_node, agent_runnable=fraud_agent_runnable))
     workflow.add_node("projection_specialist", partial(agent_node, agent_runnable=projection_agent_runnable))
 
-    workflow.add_node("tool_executor", ToolNode(all_pension_tools))
     workflow.add_node("summarizer", summarizer_node)
 
     # --- Wire up the graph ---
@@ -95,13 +146,10 @@ def build_agent_workflow():
         "FINISH": END,
     })
 
-    # After specialist agent -> tool executor
-    workflow.add_edge("risk_analyst", "tool_executor")
-    workflow.add_edge("fraud_detector", "tool_executor")
-    workflow.add_edge("projection_specialist", "tool_executor")
-
-    # After tools -> back to supervisor
-    workflow.add_edge("tool_executor", "supervisor")
+    # After specialist agent -> back to supervisor
+    workflow.add_edge("risk_analyst", "supervisor")
+    workflow.add_edge("fraud_detector", "supervisor")
+    workflow.add_edge("projection_specialist", "supervisor")
 
     # Summarizer ends the flow
     workflow.add_edge("summarizer", END)
@@ -118,7 +166,10 @@ def save_graph_image():
     """Generates and saves a PNG image of the compiled graph."""
     try:
         graph_viz = graph.get_graph()
-        image_data = graph_viz.draw_mermaid_png()
+        try:
+            image_data = graph_viz.draw_mermaid_png()
+        except AttributeError:
+            image_data = graph_viz.draw_png()
         with open("pension_agent_supervisor_graph.png", "wb") as f:
             f.write(image_data)
         print("\n✅ Graph visualization saved to 'pension_agent_supervisor_graph.png'")

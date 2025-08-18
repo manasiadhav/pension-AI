@@ -1,5 +1,5 @@
 # File: app/agents/pension_agent.py
-from langchain.agents import create_react_agent
+from langchain.agents import create_react_agent, AgentExecutor
 from langchain import hub
 # MODIFIED: Import the FULL list of tools
 from ..tools.tools import all_pension_tools
@@ -18,4 +18,5 @@ def create_pension_agent(llm):
 - Do not use the risk or fraud tools yourself."""
 
     prompt = prompt.partial(instructions=system_prompt)
-    return create_react_agent(llm, tools, prompt)
+    agent = create_react_agent(llm, tools, prompt)
+    return AgentExecutor(agent=agent, tools=tools, verbose=True, return_intermediate_steps=True)

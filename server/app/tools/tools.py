@@ -3,7 +3,8 @@ from typing import Dict, Any, List
 
 from sqlalchemy.orm import Session
 from langchain.tools import tool
-from pydantic.v1 import BaseModel, Field
+from pydantic.v1 import BaseModel, Field, validator
+import re
 
 from ..database import SessionLocal
 from .. import models
@@ -20,6 +21,16 @@ json_llm = ChatGoogleGenerativeAI(
 # --- Tool 1: Risk Analysis ---
 class RiskToolInput(BaseModel):
     user_id: int = Field(description="The numeric database ID for the user.")
+
+    @validator("user_id", pre=True)
+    def coerce_user_id(cls, value):
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            match = re.search(r"\d+", value)
+            if match:
+                return int(match.group(0))
+        raise ValueError("user_id must be an integer or a string containing an integer")
 
 @tool(args_schema=RiskToolInput)
 def analyze_risk_profile(user_id: int) -> Dict[str, Any]:
@@ -67,6 +78,16 @@ def analyze_risk_profile(user_id: int) -> Dict[str, Any]:
 class FraudToolInput(BaseModel):
     user_id: int = Field(description="The numeric database ID for the user.")
 
+    @validator("user_id", pre=True)
+    def coerce_user_id(cls, value):
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            match = re.search(r"\d+", value)
+            if match:
+                return int(match.group(0))
+        raise ValueError("user_id must be an integer or a string containing an integer")
+
 @tool(args_schema=FraudToolInput)
 def detect_fraud(user_id: int) -> Dict[str, Any]:
     """
@@ -111,6 +132,16 @@ def detect_fraud(user_id: int) -> Dict[str, Any]:
 class ProjectionToolInput(BaseModel):
     user_id: int = Field(description="The numeric database ID for the user.")
 
+    @validator("user_id", pre=True)
+    def coerce_user_id(cls, value):
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            match = re.search(r"\d+", value)
+            if match:
+                return int(match.group(0))
+        raise ValueError("user_id must be an integer or a string containing an integer")
+
 @tool(args_schema=ProjectionToolInput)
 def project_pension(user_id: int) -> Dict[str, Any]:
     """
@@ -146,6 +177,16 @@ def project_pension(user_id: int) -> Dict[str, Any]:
 class KnowledgeSearchInput(BaseModel):
     query: str = Field(description="The user's question to search for in the knowledge base.")
     user_id: int = Field(description="The numeric database ID of the user asking the question.")
+
+    @validator("user_id", pre=True)
+    def coerce_user_id(cls, value):
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            match = re.search(r"\d+", value)
+            if match:
+                return int(match.group(0))
+        raise ValueError("user_id must be an integer or a string containing an integer")
 
 @tool(args_schema=KnowledgeSearchInput)
 def knowledge_base_search(user_id: int, query: str) -> str:
