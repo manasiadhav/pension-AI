@@ -1,84 +1,72 @@
+# File: verify_chroma.py
+import sys
 import os
-from dotenv import load_dotenv
+import shutil
+from app.database import SessionLocal
+from app.models import User, PensionData
+from app.import_data import import_data
+from app.file_ingestion import ingest_pdf_to_chroma
+from app.chromadb_service import get_or_create_collection, query_collection
+from app.setup_chroma_db import ingest_faqs_to_chroma
+from app.tools.tools import analyze_risk_profile, detect_fraud, project_pension, knowledge_base_search
+from app.workflow import graph
 from langchain_core.messages import HumanMessage
+import asyncio
+import json
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'app')))
 
-# Import the specific components we need to test from your agent system
-from app.agents import supervisor_router, AgentState
 
-# A list of test cases, each with a query and the expected agent to be called
-TEST_CASES = [
-    {
-        "name": "Specific Risk Analysis Query",
-        "query": "I need a detailed risk profile for my account.",
-        "expected_agent": "risk_analyst"
-    },
-    {
-        "name": "Specific Fraud Detection Query",
-        "query": "Can you check my recent transactions for suspicious activity?",
-        "expected_agent": "fraud_detector"
-    },
-    {
-        "name": "Specific Pension Projection Query",
-        "query": "What will my savings look like in 10 years?",
-        "expected_agent": "projection_specialist"
-    },
-    {
-        "name": "Multi-Step Query (Fraud First)",
-        "query": "Check for fraud and then give me a risk analysis.",
-        "expected_agent": "fraud_detector"  # Supervisor should pick the FIRST task
-    },
-    {
-        "name": "Ambiguous Query",
-        "query": "How is my pension doing overall?",
-        "expected_agent": "risk_analyst"  # We predict it will choose risk, but projection is also plausible
-    },
-    {
-        "name": "Finishing Query",
-        "query": "Thank you, that's all I needed.",
-        "expected_agent": "FINISH"
-    }
-]
 
-def run_supervisor_tests():
-    """
-    Runs a series of tests against the supervisor_router to check its routing logic.
-    """
-    print("--- Starting Supervisor Routing Test ---")
-    
-    passed_count = 0
-    for case in TEST_CASES:
-        print(f"\n--- Testing Case: {case['name']} ---")
-        print(f"Query: \"{case['query']}\"")
-        
-        # 1. Create the input state for the supervisor function
-        # The state is a dictionary that must match the AgentState structure
-        initial_state = AgentState(
-            messages=[HumanMessage(content=case['query'])],
-            next="" # Start with next as empty
-        )
-        
-        # 2. Call the supervisor router function directly
-        result = supervisor_router(initial_state)
-        
-        # 3. Get the actual decision made by the supervisor
-        actual_agent = result['next']
-        
-        print(f"Expected Agent: {case['expected_agent']}")
-        print(f"Actual Agent Routed To: {actual_agent}")
-        
-        # 4. Check if the actual decision matches the expected one
-        if actual_agent == case['expected_agent']:
-            print("✅ PASS")
-            passed_count += 1
-        else:
-            print(f"❌ FAIL - Supervisor routed to '{actual_agent}' instead of '{case['expected_agent']}'")
+# Clean up any existing ChromaDB data to start fresh (if using persistent client)
+# If using in-memory, this is not needed
+# try:
+#     shutil.rmtree("./chroma-db")
+# except FileNotFoundError:
+#     pass
 
-    print("\n--- Test Summary ---")
-    print(f"{passed_count} / {len(TEST_CASES)} tests passed.")
+# Create a dummy PDF file for testing
+dummy_pdf_content = """
+My Pension Statement
+This document outlines my pension details.
+My name is U1000. My account number is P-12345.
+The policy on early withdrawals states that a 10% penalty applies to any withdrawal before age 59.5.
+This penalty is in addition to any income tax owed.
+"""
+dummy_file_path = "test_doc.pdf"
+from reportlab.pdfgen import canvas
+c = canvas.Canvas(dummy_file_path)
+c.drawString(100, 750, dummy_pdf_content)
+c.save()
+print("✅ Created a dummy PDF for testing.")
 
-if __name__ == "__main__":
-    load_dotenv()
-    if not os.getenv("GEMINI_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
-        print("Please set your API Key in the .env file.")
-    else:
-        run_supervisor_tests()
+# A. First, ingest the general FAQs
+print("\n--- Step 1: Ingesting general FAQs into ChromaDB... ---")
+ingest_faqs_to_chroma()
+print("FAQ ingestion complete.")
+
+# B. Now, ingest a user's document
+user_id = 1000
+print(f"\n--- Step 2: Ingesting a dummy PDF for user {user_id}... ---")
+ingest_pdf_to_chroma(dummy_file_path, user_id)
+print("Dummy PDF ingestion complete.")
+
+# C. Finally, test the search
+print("\n--- Step 3: Testing Retrieval-Augmented Generation (RAG) search... ---")
+faq_collection = get_or_create_collection("faq_collection")
+user_doc_collection = get_or_create_collection(f"user_{user_id}_docs")
+
+# Test a general query
+general_query = "What is a benefit plan?"
+faq_results = query_collection(faq_collection, query_texts=[general_query], n_results=1)
+print(f"🔍 Query: '{general_query}'")
+print(f"Found in FAQ collection: {faq_results['documents']}")
+
+# Test a user-specific query
+user_query = "What is the penalty for early withdrawal?"
+user_results = query_collection(user_doc_collection, query_texts=[user_query], n_results=1)
+print(f"🔍 Query: '{user_query}'")
+print(f"Found in user's documents: {user_results['documents']}")
+
+# Clean up the dummy file
+os.remove(dummy_file_path)
+print("✅ Cleaned up dummy PDF.")

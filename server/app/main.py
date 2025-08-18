@@ -1,11 +1,20 @@
 # main.py
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from datetime import timedelta
+import os
+import shutil
+import json
+
 from .database import Base, engine, get_db
 from . import models, security, schemas  # import Pydantic schemas
+
+# --- NEW: Import the agent graph and ingestion utility ---
+from .workflow import graph
+from file_ingestion import ingest_pdf_to_chroma
+from fastapi.responses import StreamingResponse
 
 app = FastAPI(title="Pension AI")
 
@@ -144,3 +153,72 @@ def get_users(current_user: models.User = Depends(security.get_current_user),
         raise HTTPException(status_code=403, detail="Only regulators/advisors can view users")
     users = db.query(models.User).all()
     return users
+
+
+
+# -----------------------------------------------------------------
+# --- NEW SECTION 1: AI Knowledge Base Endpoint ---
+# -----------------------------------------------------------------
+@app.post("/pension/me/upload_document")
+async def upload_pension_document(
+    current_user: models.User = Depends(security.get_current_user),
+    file: UploadFile = File(...)
+):
+    """
+    Endpoint for an authenticated user to upload a PDF document.
+    The document will be processed and ingested into the ChromaDB knowledge base.
+    """
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Invalid file type. Only PDFs are accepted.")
+
+    temp_dir = "temp_uploads"
+    os.makedirs(temp_dir, exist_ok=True)
+    file_path = os.path.join(temp_dir, file.filename)
+
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        print(f"Starting ingestion for user {current_user.id}...")
+        result = ingest_pdf_to_chroma(file_path, user_id=current_user.id)
+        
+        if result["status"] == "error":
+            raise HTTPException(status_code=500, detail=result["message"])
+
+        return {"status": "success", "filename": file.filename, "message": "Document ingested successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An error occurred during file processing: {str(e)}")
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+
+# -----------------------------------------------------------------
+# --- NEW SECTION 2: AI Agent Chat Endpoint ---
+# -----------------------------------------------------------------
+class ChatRequest(schemas.BaseModel):
+    query: str
+
+@app.post("/chat")
+async def agent_chat(
+    request: ChatRequest,
+    current_user: models.User = Depends(security.get_current_user)
+):
+    """
+    Main endpoint to interact with the multi-agent AI system.
+    It takes a user query, passes it to the agent graph, and streams back the response.
+    """
+    async def event_stream():
+        # Pass the authenticated user's ID and role to the agent system for context
+        query_with_context = f"User Info: id={current_user.id}, role={current_user.role}. Query: {request.query}"
+        
+        # Use the imported 'graph' and its astream() method to get a stream of events
+        async for event in graph.astream(
+            {"messages": [("user", query_with_context)]}
+        ):
+            # Each `event` is a dictionary representing a step in the graph
+            # We format it as a Server-Sent Event (SSE) for the frontend
+            print("--- STREAMING EVENT TO CLIENT ---", event)
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
