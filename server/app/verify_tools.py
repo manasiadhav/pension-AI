@@ -3,7 +3,7 @@ import asyncio, json
 from app.workflow import graph
 
 async def main():
-    query = 'What is the policy on early withdrawals from my pension user 1?'
+    query = 'am i in risk user 4?'
     async for event in graph.astream({'messages': [('user', query)]}):
         # Pretty-print each step so you can see which node ran and what it produced
         print(json.dumps(event, indent=2, default=str))
