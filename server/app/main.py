@@ -7,6 +7,8 @@ from datetime import timedelta
 import os
 import shutil
 import json
+from typing import Dict, Any, Optional
+from pydantic import BaseModel
 
 from .database import Base, engine, get_db
 from . import models, security, schemas  # import Pydantic schemas
@@ -15,6 +17,18 @@ from . import models, security, schemas  # import Pydantic schemas
 from .workflow import graph
 from file_ingestion import ingest_pdf_to_chroma
 from fastapi.responses import StreamingResponse
+
+# --- NEW: Response Models for AI Chat ---
+class FinalSummaryResponse(BaseModel):
+    """Structured response containing summary and optional chart data."""
+    summary: str
+    chart_data: Optional[Dict[str, Any]] = None
+    plotly_figures: Optional[Dict[str, Any]] = None
+    chart_images: Optional[Dict[str, str]] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+class ChatRequest(BaseModel):
+    query: str
 
 app = FastAPI(title="Pension AI")
 
@@ -196,28 +210,73 @@ async def upload_pension_document(
 # -----------------------------------------------------------------
 # --- NEW SECTION 2: AI Agent Chat Endpoint ---
 # -----------------------------------------------------------------
-class ChatRequest(schemas.BaseModel):
-    query: str
-
-@app.post("/chat")
+@app.post("/chat", response_model=FinalSummaryResponse)
 async def agent_chat(
     request: ChatRequest,
     current_user: models.User = Depends(security.get_current_user)
 ):
     """
     Main endpoint to interact with the multi-agent AI system.
-    It takes a user query, passes it to the agent graph, and streams back the response.
+    It takes a user query, passes it to the agent graph, and returns a structured response.
+    """
+    # Pass the authenticated user's ID and role to the agent system for context
+    query_with_context = f"User Info: id={current_user.id}, role={current_user.role}. Query: {request.query}"
+    
+    # Use the imported 'graph' to get the final result
+    result = graph.invoke({"messages": [("user", query_with_context)]})
+    
+    # Extract the final response from the workflow result
+    final_response = result.get("final_response", {})
+    
+    if final_response:
+        # Return structured response with chart data
+        return FinalSummaryResponse(
+            summary=final_response.get("summary", "Analysis completed."),
+            chart_data=final_response.get("charts", {}),
+            plotly_figures=final_response.get("plotly_figs", {}),
+            chart_images=final_response.get("chart_images", {}),
+            metadata={
+                "user_id": current_user.id,
+                "user_role": current_user.role,
+                "query": request.query,
+                "workflow_completed": True
+            }
+        )
+    else:
+        # Fallback: extract summary from messages
+        messages = result.get("messages", [])
+        summary = ""
+        for msg in reversed(messages):
+            if hasattr(msg, 'content') and not msg.content.startswith('[Tools executed]'):
+                summary = msg.content
+                break
+        
+        return FinalSummaryResponse(
+            summary=summary or "Analysis completed.",
+            metadata={
+                "user_id": current_user.id,
+                "user_role": current_user.role,
+                "query": request.query,
+                "workflow_completed": True
+            }
+        )
+
+# -----------------------------------------------------------------
+# --- NEW SECTION 3: Optional Streaming Chat Endpoint ---
+# -----------------------------------------------------------------
+@app.post("/chat/stream")
+async def agent_chat_stream(
+    request: ChatRequest,
+    current_user: models.User = Depends(security.get_current_user)
+):
+    """
+    Streaming endpoint for real-time updates from the AI workflow.
+    Useful for showing progress and intermediate steps.
     """
     async def event_stream():
-        # Pass the authenticated user's ID and role to the agent system for context
         query_with_context = f"User Info: id={current_user.id}, role={current_user.role}. Query: {request.query}"
         
-        # Use the imported 'graph' and its astream() method to get a stream of events
-        async for event in graph.astream(
-            {"messages": [("user", query_with_context)]}
-        ):
-            # Each `event` is a dictionary representing a step in the graph
-            # We format it as a Server-Sent Event (SSE) for the frontend
+        async for event in graph.astream({"messages": [("user", query_with_context)]}):
             print("--- STREAMING EVENT TO CLIENT ---", event)
             yield f"data: {json.dumps(event)}\n\n"
 

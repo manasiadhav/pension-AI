@@ -12,6 +12,7 @@ from .agents.risk_agent import create_risk_agent
 from .agents.fraud_agent import create_fraud_agent
 from .agents.pension_agent import create_pension_agent
 from .agents.summarizer_agent import create_summarizer_chain
+from .agents.visualizer_agent import create_visualizer_node
 from .agents.supervisor import create_supervisor_chain
 
 
@@ -21,6 +22,10 @@ class AgentState(TypedDict, total=False):
     next: str
     intermediate_steps: List[BaseMessage]
     turns: int
+    charts: dict
+    chart_images: dict
+    plotly_figs: dict
+    final_response: dict
 
 
 # --- Graph Builder Function ---
@@ -40,11 +45,69 @@ def build_agent_workflow():
 
     # --- Supervisor Node ---
     def supervisor_node(state: AgentState):
+        # Check if we're returning from a specialist agent (have intermediate_steps)
+        has_specialist_data = bool(state.get("intermediate_steps"))
+        
+        # Check if we have visualization data (charts, plotly_figs, etc.)
+        has_visualization_data = bool(
+            state.get("charts") or 
+            state.get("plotly_figs") or 
+            state.get("chart_images")
+        )
+        
+        if has_visualization_data:
+            # We have visualization data, route to summarizer for final consolidation
+            return {"next": "summarizer", "turns": state.get("turns", 0)}
+        
+        elif has_specialist_data:
+            # We have data from specialist agents, now make intelligent routing decision
+            # Check if the original query requested visualization or if data would benefit from it
+            original_query = ""
+            for msg in state["messages"]:
+                if isinstance(msg, HumanMessage):
+                    original_query = msg.content.lower()
+                    break
+            
+            # Check what data we have
+            has_projection = any(
+                step[1] if isinstance(step, (list, tuple)) and len(step) == 2 else None
+                for step in state.get("intermediate_steps", [])
+                if hasattr(step[0], "tool") and step[0].tool == "project_pension"
+            )
+            has_risk = any(
+                step[1] if isinstance(step, (list, tuple)) and len(step) == 2 else None
+                for step in state.get("intermediate_steps", [])
+                if hasattr(step[0], "tool") and step[0].tool == "analyze_risk_profile"
+            )
+            has_fraud = any(
+                step[1] if isinstance(step, (list, tuple)) and len(step) == 2 else None
+                for step in state.get("intermediate_steps", [])
+                if hasattr(step[0], "tool") and step[0].tool == "detect_fraud"
+            )
+            
+            # Decision logic for visualization
+            should_visualize = (
+                "chart" in original_query or 
+                "graph" in original_query or 
+                "visual" in original_query or
+                "show me" in original_query or
+                (has_projection and ("growth" in original_query or "time" in original_query)) or
+                (has_risk and "risk" in original_query) or
+                (has_fraud and "fraud" in original_query)
+            )
+            
+            if should_visualize:
+                return {"next": "visualizer", "turns": state.get("turns", 0)}
+            else:
+                return {"next": "summarizer", "turns": state.get("turns", 0)}
+        
+        # First pass - route to specialist agents based on user query
         resp = supervisor_chain_runnable.invoke({"messages": state["messages"]})
         if isinstance(resp, dict):
             next_value = resp.get("next") or resp.get("output") or resp.get("text")
         else:
             next_value = getattr(resp, "next", None) or (resp if isinstance(resp, str) else None)
+        
         # Increment loop counter to avoid infinite routing
         new_turns = int(state.get("turns", 0)) + 1
         if new_turns >= 5:
@@ -72,7 +135,7 @@ def build_agent_workflow():
         if not last_user_text:
             return {"messages": list(state["messages"]) + [AIMessage(content="⚠️ No user message found to process.")]}
 
-        result = agent_runnable.invoke({
+        result = agent_runnable({
             "input": last_user_text
         })
 
@@ -115,14 +178,35 @@ def build_agent_workflow():
 
     # --- Summarizer Node ---
     def summarizer_node(state: AgentState):
-        summary = summarizer_chain_runnable.invoke({"messages": state["messages"]})
-        if isinstance(summary, str):
-            summary_text = summary
-        elif isinstance(summary, dict):
-            summary_text = summary.get("output") or summary.get("content") or summary.get("text") or str(summary)
+        # Call the summarizer function directly (it returns a function, not a chain)
+        summary_result = summarizer_chain_runnable(state)
+        
+        # Extract the final response if available
+        final_response = summary_result.get("final_response", {})
+        
+        # Add the summary message
+        new_messages = list(state["messages"])
+        if final_response:
+            # Add the structured final response
+            new_messages.append(AIMessage(content=final_response.get("summary", "Summary completed.")))
+            # Store the final response in state for frontend access
+            return {
+                "messages": new_messages,
+                "final_response": final_response
+            }
         else:
-            summary_text = getattr(summary, "content", None) or str(summary)
-        return {"messages": state["messages"] + [AIMessage(content=summary_text)]}
+            # Fallback to old behavior
+            if isinstance(summary_result, str):
+                summary_text = summary_result
+            elif isinstance(summary_result, dict):
+                summary_text = summary_result.get("output") or summary_result.get("content") or summary_result.get("text") or str(summary_result)
+            else:
+                summary_text = getattr(summary_result, "content", None) or str(summary_result)
+            return {"messages": state["messages"] + [AIMessage(content=summary_text)]}
+
+    # --- Visualization Node ---
+    from .agents.visualizer_agent import create_visualizer_node as _make_vis
+    visualizer_node = _make_vis()
 
     # --- Build the graph ---
     workflow = StateGraph(AgentState)
@@ -134,6 +218,7 @@ def build_agent_workflow():
     workflow.add_node("projection_specialist", partial(agent_node, agent_runnable=projection_agent_runnable))
 
     workflow.add_node("summarizer", summarizer_node)
+    workflow.add_node("visualizer", visualizer_node)
 
     # --- Wire up the graph ---
     workflow.set_entry_point("supervisor")
@@ -143,15 +228,19 @@ def build_agent_workflow():
         "fraud_detector": "fraud_detector",
         "projection_specialist": "projection_specialist",
         "summarizer": "summarizer",
+        "visualizer": "visualizer",
         "FINISH": END,
     })
 
-    # After specialist agent -> back to supervisor
+    # After specialist agents -> return to supervisor for intelligent routing
     workflow.add_edge("risk_analyst", "supervisor")
     workflow.add_edge("fraud_detector", "supervisor")
     workflow.add_edge("projection_specialist", "supervisor")
 
-    # Summarizer ends the flow
+    # After visualizer -> return to supervisor for final routing decision
+    workflow.add_edge("visualizer", "supervisor")
+
+    # After summarizer -> workflow ends
     workflow.add_edge("summarizer", END)
 
     return workflow.compile()
