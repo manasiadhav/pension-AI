@@ -1,14 +1,16 @@
 # File: app/chromadb_service.py
 import chromadb
 from typing import List, Dict, Any, Optional
+import os
 import json
 from uuid import uuid4
 from datetime import datetime, timezone
 
-# Use a client to connect to ChromaDB (local in-memory for this demo)
-# For production, you would configure a persistent client:
-# client = chromadb.PersistentClient(path="/path/to/your/db")
-client = chromadb.Client()
+# Use a persistent client so data survives across process runs
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+CHROMA_PATH = os.path.join(BASE_DIR, "chroma_db")
+os.makedirs(CHROMA_PATH, exist_ok=True)
+client = chromadb.PersistentClient(path=CHROMA_PATH)
 
 def get_or_create_collection(name: str):
     """

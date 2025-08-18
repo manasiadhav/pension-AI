@@ -3,7 +3,7 @@ from typing import Dict, Any, List
 
 from sqlalchemy.orm import Session
 from langchain.tools import tool
-from pydantic.v1 import BaseModel, Field, validator
+from pydantic.v1 import BaseModel, Field, validator, root_validator
 import re
 
 from ..database import SessionLocal
@@ -174,41 +174,52 @@ def project_pension(user_id: int) -> Dict[str, Any]:
         db.close()
         
         
-class KnowledgeSearchInput(BaseModel):
-    query: str = Field(description="The user's question to search for in the knowledge base.")
-    user_id: int = Field(description="The numeric database ID of the user asking the question.")
-
-    @validator("user_id", pre=True)
-    def coerce_user_id(cls, value):
-        if isinstance(value, int):
-            return value
-        if isinstance(value, str):
-            match = re.search(r"\d+", value)
-            if match:
-                return int(match.group(0))
-        raise ValueError("user_id must be an integer or a string containing an integer")
-
-@tool(args_schema=KnowledgeSearchInput)
-def knowledge_base_search(user_id: int, query: str) -> str:
+@tool("knowledge_base_search")
+def knowledge_base_search(input: str) -> str:
     """
-    Searches a knowledge base of FAQs and the user's private documents. Use this as a fallback
-    for general questions, definitions, or queries about uploaded documents that other tools cannot answer.
+    Search the knowledge base (and optionally user docs) for a query.
+    Accepted input:
+    - "user_id=1, query=..."
+    - "query=..."
+    - any free text → treated as the query
     """
+    # Extract user_id and query from a free-form input string
+    uid_match = re.search(r"(?:^|[,\s])user_id\s*[:=]\s*(\d+)(?:\b|,)", input, flags=re.IGNORECASE)
+    user_id = int(uid_match.group(1)) if uid_match else None
+    q_match = re.search(r"(?:^|[,\s])query\s*[:=]\s*(\".*?\"|\'.*?\'|[^,]+)", input, flags=re.IGNORECASE)
+    if q_match:
+        q_raw = q_match.group(1).strip()
+        if (q_raw.startswith('"') and q_raw.endswith('"')) or (q_raw.startswith("'") and q_raw.endswith("'")):
+            q_raw = q_raw[1:-1]
+        query = q_raw.strip()
+    else:
+        query = input.strip()
+
     print(f"\n--- TOOL: Searching knowledge base for query: '{query}' ---")
     context = ""
     try:
         # 1. Search the general FAQ collection
         faq_collection = get_or_create_collection("faq_collection")
-        faq_results = query_collection(faq_collection, query_texts=[query], n_results=2)
-        if faq_results['documents'] and faq_results['documents'][0]:
-            context += "--- Relevant General Info ---\n" + "\n".join(faq_results['documents'][0])
+        faq_results = query_collection(faq_collection, query_texts=[query], n_results=5)
+        if faq_results.get('documents') and faq_results['documents'][0]:
+            # Prefer metadata answers if present
+            answers = []
+            for docs, metas in zip(faq_results.get('documents', []), faq_results.get('metadatas', [])):
+                for meta in metas:
+                    if isinstance(meta, dict) and meta.get('answer'):
+                        answers.append(meta['answer'])
+            if answers:
+                context += "--- Relevant General Info ---\n" + "\n".join(answers[:3])
+            else:
+                context += "--- Relevant General Info ---\n" + "\n".join(faq_results['documents'][0])
 
-        # 2. Search the user's private document collection
-        user_collection_name = f"user_{user_id}_docs"
-        user_collection = get_or_create_collection(user_collection_name)
-        user_doc_results = query_collection(user_collection, query_texts=[query], n_results=3)
-        if user_doc_results['documents'] and user_doc_results['documents'][0]:
-            context += "\n\n--- Relevant Info From Your Documents ---\n" + "\n".join(user_doc_results['documents'][0])
+        # 2. Search the user's private document collection only when user_id is present
+        if user_id is not None:
+            user_collection_name = f"user_{user_id}_docs"
+            user_collection = get_or_create_collection(user_collection_name)
+            user_doc_results = query_collection(user_collection, query_texts=[query], n_results=3)
+            if user_doc_results.get('documents') and user_doc_results['documents'][0]:
+                context += "\n\n--- Relevant Info From Your Documents ---\n" + "\n".join(user_doc_results['documents'][0])
 
         return context if context else "No relevant information found in the knowledge base."
     except Exception as e:

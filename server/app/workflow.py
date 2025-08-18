@@ -47,7 +47,7 @@ def build_agent_workflow():
             next_value = getattr(resp, "next", None) or (resp if isinstance(resp, str) else None)
         # Increment loop counter to avoid infinite routing
         new_turns = int(state.get("turns", 0)) + 1
-        if new_turns >= 8:
+        if new_turns >= 5:
             next_value = "FINISH"
         if not next_value:
             next_value = "FINISH"
