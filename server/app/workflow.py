@@ -67,6 +67,12 @@ def build_agent_workflow():
                 if isinstance(msg, HumanMessage):
                     original_query = msg.content.lower()
                     break
+                elif isinstance(msg, dict) and str(msg.get("role", "")).lower() in ("user", "human"):
+                    original_query = msg.get("content", "").lower()
+                    break
+                elif isinstance(msg, tuple) and len(msg) >= 2 and str(msg[0]).lower() in ("user", "human"):
+                    original_query = str(msg[1]).lower()
+                    break
             
             # Check what data we have
             has_projection = any(
@@ -85,20 +91,28 @@ def build_agent_workflow():
                 if hasattr(step[0], "tool") and step[0].tool == "detect_fraud"
             )
             
-            # Decision logic for visualization
+            # Enhanced decision logic for visualization
             should_visualize = (
                 "chart" in original_query or 
                 "graph" in original_query or 
                 "visual" in original_query or
+                "visualize" in original_query or
                 "show me" in original_query or
-                (has_projection and ("growth" in original_query or "time" in original_query)) or
+                "display" in original_query or
+                "plot" in original_query or
+                (has_projection and ("growth" in original_query or "time" in original_query or "progress" in original_query or "goal" in original_query or "retirement" in original_query or "pension" in original_query or "projection" in original_query)) or
                 (has_risk and "risk" in original_query) or
                 (has_fraud and "fraud" in original_query)
             )
             
+            print(f"🔍 Supervisor Decision: original_query='{original_query}', should_visualize={should_visualize}")
+            print(f"   has_projection={has_projection}, has_risk={has_risk}, has_fraud={has_fraud}")
+            
             if should_visualize:
+                print("   ✅ Routing to visualizer")
                 return {"next": "visualizer", "turns": state.get("turns", 0)}
             else:
+                print("   📝 Routing to summarizer")
                 return {"next": "summarizer", "turns": state.get("turns", 0)}
         
         # First pass - route to specialist agents based on user query

@@ -46,28 +46,104 @@ def create_visualizer_node():
 		# Projection line (start vs end)
 		try:
 			if isinstance(projection_data, dict):
-				years = int(projection_data.get("projection_period_years") or 0)
-				def to_num(x):
-					try:
-						return float(str(x).replace("$", "").replace(",", ""))
-					except Exception:
-						return None
-				start_val = to_num(projection_data.get("starting_balance"))
-				end_val = to_num(projection_data.get("projected_balance"))
-				if start_val is not None and end_val is not None:
-					charts["projection"] = {
+				# Check for new comprehensive pension data structure
+				if "current_savings" in projection_data and "retirement_goal" in projection_data:
+					# New comprehensive structure
+					current_savings = projection_data.get("current_savings", "$0")
+					retirement_goal = projection_data.get("retirement_goal", "$0")
+					progress = projection_data.get("progress_to_goal", "0%")
+					status = projection_data.get("status", "Unknown")
+					years_remaining = projection_data.get("years_remaining", 0)
+					savings_rate = projection_data.get("savings_rate", "0%")
+					nominal_projection = projection_data.get("nominal_projection", "$0")
+					inflation_adjusted = projection_data.get("inflation_adjusted", False)
+					
+					# Create progress chart
+					charts["pension_progress"] = {
 						"$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-						"description": "Projected balance over time",
+						"description": "Retirement Goal Progress",
 						"data": {"values": [
-							{"year": 0, "balance": start_val},
-							{"year": years or 10, "balance": end_val}
+							{"category": "Current Savings", "amount": float(str(current_savings).replace("$", "").replace(",", ""))},
+							{"category": "Remaining Goal", "amount": float(str(retirement_goal).replace("$", "").replace(",", "")) - float(str(current_savings).replace("$", "").replace(",", ""))}
 						]},
-						"mark": {"type": "line", "point": True},
+						"mark": {"type": "bar", "stack": "zero"},
 						"encoding": {
-							"x": {"field": "year", "type": "quantitative", "title": "Year"},
-							"y": {"field": "balance", "type": "quantitative", "title": "Balance ($)"}
+							"x": {"field": "category", "type": "nominal", "title": ""},
+							"y": {"field": "amount", "type": "quantitative", "title": "Amount ($)"},
+							"color": {"field": "category", "type": "nominal"}
 						}
 					}
+					
+					# Create progress gauge
+					charts["progress_gauge"] = {
+						"$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+						"description": "Progress to Goal",
+						"data": {"values": [{"progress": float(str(progress).replace("%", ""))}]},
+						"mark": {"type": "arc", "innerRadius": 50},
+						"encoding": {
+							"theta": {"field": "progress", "type": "quantitative", "scale": {"domain": [0, 100]}},
+							"color": {"field": "progress", "type": "quantitative", "scale": {"range": ["#ff4444", "#ffaa00", "#44ff44"]}}
+						}
+					}
+					
+					# Create timeline chart with both nominal and inflation-adjusted projections
+					if years_remaining > 0:
+						charts["retirement_timeline"] = {
+							"$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+							"description": "Years to Retirement",
+							"data": {"values": [
+								{"year": 0, "balance": float(str(current_savings).replace("$", "").replace(",", "")), "type": "Current"},
+								{"year": years_remaining, "balance": float(str(projection_data.get("projected_balance_at_retirement", "$0")).replace("$", "").replace(",", "")), "type": "Inflation-Adjusted"},
+								{"year": years_remaining, "balance": float(str(nominal_projection).replace("$", "").replace(",", "")), "type": "Nominal"}
+							]},
+							"mark": {"type": "line", "point": True},
+							"encoding": {
+								"x": {"field": "year", "type": "quantitative", "title": "Years"},
+								"y": {"field": "balance", "type": "quantitative", "title": "Balance ($)"},
+								"color": {"field": "type", "type": "nominal"}
+							}
+						}
+					
+					# Create comparison chart showing nominal vs inflation-adjusted
+					if inflation_adjusted and nominal_projection != "$0":
+						charts["projection_comparison"] = {
+							"$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+							"description": "Nominal vs Inflation-Adjusted Projection",
+							"data": {"values": [
+								{"type": "Nominal Projection", "amount": float(str(nominal_projection).replace("$", "").replace(",", ""))},
+								{"type": "Inflation-Adjusted", "amount": float(str(projection_data.get("projected_balance_at_retirement", "$0")).replace("$", "").replace(",", ""))}
+							]},
+							"mark": {"type": "bar"},
+							"encoding": {
+								"x": {"field": "type", "type": "nominal", "title": ""},
+								"y": {"field": "amount", "type": "quantitative", "title": "Amount ($)"},
+								"color": {"field": "type", "type": "nominal"}
+							}
+						}
+				else:
+					# Fallback to old structure
+					years = int(projection_data.get("projection_period_years") or 0)
+					def to_num(x):
+						try:
+							return float(str(x).replace("$", "").replace(",", ""))
+						except Exception:
+							return None
+					start_val = to_num(projection_data.get("starting_balance"))
+					end_val = to_num(projection_data.get("projected_balance"))
+					if start_val is not None and end_val is not None:
+						charts["projection"] = {
+							"$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+							"description": "Projected balance over time",
+							"data": {"values": [
+								{"year": 0, "balance": start_val},
+								{"year": years or 10, "balance": end_val}
+							]},
+							"mark": {"type": "line", "point": True},
+							"encoding": {
+								"x": {"field": "year", "type": "quantitative", "title": "Year"},
+								"y": {"field": "balance", "type": "quantitative", "title": "Balance ($)"}
+							}
+						}
 		except Exception:
 			pass
 
@@ -135,6 +211,78 @@ def create_visualizer_node():
 							"title": "Projected balance over time",
 							"xaxis": {"title": "Year"},
 							"yaxis": {"title": "Balance ($)"}
+						}
+					}
+			
+			# New comprehensive pension charts
+			pension_progress = charts.get("pension_progress")
+			if pension_progress and isinstance(pension_progress, dict):
+				values = pension_progress.get("data", {}).get("values", [])
+				categories = [v.get("category") for v in values]
+				amounts = [v.get("amount") for v in values]
+				if categories and amounts:
+					plotly_figs["pension_progress"] = {
+						"data": [
+							{"type": "bar", "x": categories, "y": amounts, "name": "Amount"}
+						],
+						"layout": {
+							"title": "Retirement Goal Progress",
+							"xaxis": {"title": ""},
+							"yaxis": {"title": "Amount ($)"}
+						}
+					}
+			
+			# Progress gauge
+			progress_gauge = charts.get("progress_gauge")
+			if progress_gauge and isinstance(progress_gauge, dict):
+				values = progress_gauge.get("data", {}).get("values", [])
+				if values and len(values) > 0:
+					progress = values[0].get("progress", 0)
+					plotly_figs["progress_gauge"] = {
+						"data": [
+							{"type": "indicator", "mode": "gauge+number+delta", "value": progress, "gauge": {"axis": {"range": [None, 100]}, "bar": {"color": "darkblue"}, "steps": [{"range": [0, 25], "color": "lightgray"}, {"range": [25, 50], "color": "yellow"}, {"range": [50, 100], "color": "green"}]}}
+						],
+						"layout": {
+							"title": "Progress to Goal (%)",
+							"width": 400,
+							"height": 300
+						}
+					}
+			
+			# Retirement timeline
+			retirement_timeline = charts.get("retirement_timeline")
+			if retirement_timeline and isinstance(retirement_timeline, dict):
+				values = retirement_timeline.get("data", {}).get("values", [])
+				x_vals = [v.get("year") for v in values]
+				y_vals = [v.get("balance") for v in values]
+				types = [v.get("type", "Unknown") for v in values]
+				if len(x_vals) >= 2 and len(y_vals) >= 2:
+					plotly_figs["retirement_timeline"] = {
+						"data": [
+							{"type": "scatter", "mode": "lines+markers", "x": x_vals, "y": y_vals, "name": "Balance", "text": types, "hovertemplate": "Year: %{x}<br>Balance: $%{y:,.0f}<br>Type: %{text}<extra></extra>"}
+						],
+						"layout": {
+							"title": "Years to Retirement",
+							"xaxis": {"title": "Years"},
+							"yaxis": {"title": "Balance ($)"}
+						}
+					}
+			
+			# Projection comparison chart
+			projection_comparison = charts.get("projection_comparison")
+			if projection_comparison and isinstance(projection_comparison, dict):
+				values = projection_comparison.get("data", {}).get("values", [])
+				types = [v.get("type") for v in values]
+				amounts = [v.get("amount") for v in values]
+				if types and amounts:
+					plotly_figs["projection_comparison"] = {
+						"data": [
+							{"type": "bar", "x": types, "y": amounts, "name": "Projection Amount", "text": [f"${amount:,.0f}" for amount in amounts], "textposition": "auto"}
+						],
+						"layout": {
+							"title": "Nominal vs Inflation-Adjusted Projection",
+							"xaxis": {"title": ""},
+							"yaxis": {"title": "Amount ($)"}
 						}
 					}
 		except Exception:

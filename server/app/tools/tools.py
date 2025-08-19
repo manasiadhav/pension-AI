@@ -145,30 +145,107 @@ class ProjectionToolInput(BaseModel):
 @tool(args_schema=ProjectionToolInput)
 def project_pension(user_id: int) -> Dict[str, Any]:
     """
-    Calculates a simple 10-year pension projection for a user based on their ID.
-    It fetches savings and contribution data and performs a deterministic calculation.
+    Calculates a comprehensive pension overview for a user including current savings, goal progress, status, years remaining, and savings rate.
+    It fetches savings and contribution data and performs deterministic calculations.
     """
-    print(f"\n--- TOOL: Running Pension Projection for User ID: {user_id} ---")
+    print(f"\n--- TOOL: Running Comprehensive Pension Overview for User ID: {user_id} ---")
     db: Session = SessionLocal()
     try:
         pension_data = db.query(models.PensionData).filter(models.PensionData.user_id == user_id).first()
         if not pension_data:
             return {"error": f"No pension data found for User ID: {user_id}"}
 
-        # Perform calculation in reliable Python code, not with the LLM
-        years = 10
+        # Get user data
         current_savings = pension_data.current_savings or 0
         annual_contribution = pension_data.total_annual_contribution or 0
-        return_rate = pension_data.annual_return_rate or 5.0 # Default to 5%
+        return_rate = pension_data.annual_return_rate or 5.0
+        target_retirement_age = 65
+        user_age = pension_data.age or 35  # Default age if not provided
+        annual_income = pension_data.annual_income or 50000  # Default income if not provided
         
-        future_value = current_savings * ((1 + return_rate / 100) ** years) + \
-                       annual_contribution * ((((1 + return_rate / 100) ** years) - 1) / (return_rate / 100))
+        # Calculate years remaining until retirement
+        years_to_retirement = max(0, target_retirement_age - user_age)
+        
+        # Calculate goal amount (using 4% rule: 25x annual expenses)
+        # Assuming annual expenses are 80% of income
+        annual_expenses = annual_income * 0.8
+        retirement_goal = annual_expenses * 25
+        
+        # Calculate progress to goal
+        progress_percentage = min(100, (current_savings / retirement_goal) * 100) if retirement_goal > 0 else 0
+        
+        # Determine status based on progress and age
+        if years_to_retirement <= 0:
+            status = "At Retirement Age"
+        elif progress_percentage >= 80:
+            status = "On Track"
+        elif progress_percentage >= 50:
+            status = "Good Progress"
+        elif progress_percentage >= 25:
+            status = "Needs Attention"
+        else:
+            status = "Needs Attention"
+        
+        # Calculate savings rate as percentage of income
+        savings_rate_percentage = (annual_contribution / annual_income) * 100 if annual_income > 0 else 0
+        
+        # Calculate projected balance at retirement using the new projection service
+        if years_to_retirement > 0:
+            # Prepare data for projection service
+            user_data = {
+                "Pension_Type": "Defined Contribution",
+                "Current_Savings": current_savings,
+                "Total_Annual_Contribution": annual_contribution,
+                "Annual_Return_Rate": return_rate,
+                "Age": user_age,
+                "Retirement_Age_Goal": target_retirement_age,
+                "Fees_Percentage": 0.5  # Default 0.5% fees
+            }
+            
+            scenario_params = {
+                "new_retirement_age": target_retirement_age,
+                "new_annual_contribution": annual_contribution,
+                "new_return_rate": return_rate
+            }
+            
+            # Import and use the projection service
+            try:
+                from ..agents.services.projection import run_projection_agent
+                projection_result = run_projection_agent(user_data, scenario_params)
+                
+                if "error" not in projection_result:
+                    future_value = projection_result.get("inflation_adjusted_projection", 0)
+                    nominal_value = projection_result.get("nominal_projection", 0)
+                else:
+                    # Fallback to simple calculation if projection service fails
+                    future_value = current_savings * ((1 + return_rate / 100) ** years_to_retirement) + \
+                                  annual_contribution * ((((1 + return_rate / 100) ** years_to_retirement) - 1) / (return_rate / 100))
+                    nominal_value = future_value
+            except ImportError:
+                # Fallback to simple calculation if projection service not available
+                future_value = current_savings * ((1 + return_rate / 100) ** years_to_retirement) + \
+                              annual_contribution * ((((1 + return_rate / 100) ** years_to_retirement) - 1) / (return_rate / 100))
+                nominal_value = future_value
+        else:
+            future_value = current_savings
+            nominal_value = current_savings
 
         return {
-            "projection_period_years": years,
-            "starting_balance": f"${current_savings:,.2f}",
-            "projected_balance": f"${future_value:,.2f}",
-            "assumed_annual_return": f"{return_rate}%"
+            "current_savings": f"${current_savings:,.0f}",
+            "retirement_goal": f"${retirement_goal:,.0f}",
+            "progress_to_goal": f"{progress_percentage:.1f}%",
+            "status": status,
+            "years_remaining": years_to_retirement,
+            "target_retirement_age": target_retirement_age,
+            "savings_rate": f"{savings_rate_percentage:.0f}%",
+            "annual_income": f"${annual_income:,.0f}",
+            "annual_contribution": f"${annual_contribution:,.0f}",
+            "projected_balance_at_retirement": f"${future_value:,.0f}",
+            "nominal_projection": f"${nominal_value:,.0f}",
+            "assumed_annual_return": f"{return_rate}%",
+            "user_age": user_age,
+            "pension_type": "Defined Contribution",
+            "inflation_adjusted": True
         }
     finally:
         db.close()
