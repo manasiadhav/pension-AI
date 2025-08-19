@@ -15,9 +15,10 @@ def create_summarizer_chain(llm):
     ])
     
     def apply_content_guardrails(text: str) -> str:
-        """Apply content guardrails to filter inappropriate content"""
-        
-        # Define blocked content patterns
+        """
+        Apply content guardrails to filter out inappropriate content.
+        Only blocks clearly inappropriate content, not legitimate financial analysis.
+        """
         blocked_patterns = {
             'religious': [
                 r'\b(pray|prayer|god|jesus|allah|buddha|hindu|islam|christian|jewish|religious|spiritual|faith|blessing|divine|heaven|hell)\b',
@@ -27,33 +28,41 @@ def create_summarizer_chain(llm):
             'political': [
                 r'\b(democrat|republican|liberal|conservative|left|right|wing|party|election|vote|campaign|politician|senator|congress|president)\b',
                 r'\b(government|administration|policy|legislation|bill|law|regulation)\b',
-                r'\b(progressive|moderate|radical|extremist|activist|protest|rally)\b'
+                r'\b(progressive|moderate|radical|extremist|activist|protest|rally)\b',
+                r'\bpolitic\w*\b'  # political, politics
             ],
             'investment_strategy': [
-                r'\b(buy|sell|hold|stock|shares|equity|market|timing|entry|exit|position|portfolio|allocation)\b',
-                r'\b(day trading|swing trading|momentum|value|growth|dividend|yield)\b',
-                r'\b(cryptocurrency|bitcoin|ethereum|blockchain|ico|token|coin)\b',
-                r'\b(real estate|property|mortgage|loan|credit|debt|leverage)\b',
-                r'\b(hedge fund|private equity|venture capital|startup|ipo|merger|acquisition)\b'
+                r'\b(buy\s+this\s+stock|sell\s+that\s+stock|invest\s+in\s+bitcoin|buy\s+crypto|day\s+trading|swing\s+trading)\b',
+                r'\b(you\s+should\s+buy|you\s+should\s+sell|i\s+recommend\s+buying|i\s+recommend\s+selling)\b',
+                r'\b(put\s+all\s+your\s+money\s+in|move\s+to\s+cash|market\s+timing|entry\s+point|exit\s+point)\b',
+                r'\b(hedge\s+fund|private\s+equity|venture\s+capital|startup|ico|token|coin)\b'
             ]
         }
         
         # Check for blocked content
-        found_issues = []
+        should_block = False
+        blocked_category = ""
         for category, patterns in blocked_patterns.items():
             for pattern in patterns:
                 if re.search(pattern, text.lower()):
-                    found_issues.append(category)
+                    should_block = True
+                    blocked_category = category
                     break
+            if should_block:
+                break
         
-        if found_issues:
+        if should_block:
+            print(f"🔍 Summarizer: Guardrail triggered for {blocked_category} content")
             # Replace blocked content with appropriate message
             replacement_text = (
-                f"I apologize, but I cannot provide advice related to {', '.join(found_issues)}. "
-                f"Please focus your questions on pension analysis, risk assessment, or fraud detection. "
-                f"Here is the relevant financial data: {text[:200]}..."
+                "I apologize, but I cannot provide advice related to "
+                f"{blocked_category}. Please focus your questions on pension analysis, "
+                "risk assessment, or fraud detection. Here is the relevant financial data: "
             )
-            return replacement_text
+            
+            # Find the blocked content and replace it
+            for pattern in blocked_patterns[blocked_category]:
+                text = re.sub(pattern, replacement_text, text, flags=re.IGNORECASE)
         
         return text
     

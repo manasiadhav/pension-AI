@@ -60,9 +60,12 @@ def build_agent_workflow():
             # We have visualization data, route to summarizer for final consolidation
             return {"next": "summarizer", "turns": state.get("turns", 0)}
         
-        elif has_specialist_data:
-            # We have data from specialist agents, now make intelligent routing decision
-            # Check if the original query requested visualization or if data would benefit from it
+        # Check if we have data from specialist agents (second pass routing)
+        if state.get("intermediate_steps"):
+            print(f"🔍 Supervisor: Checking intermediate_steps for tool usage...")
+            print(f"🔍 Supervisor: intermediate_steps = {state.get('intermediate_steps')}")
+            
+            # Extract the original query for visualization decision
             original_query = ""
             for msg in state["messages"]:
                 if isinstance(msg, HumanMessage):
@@ -75,7 +78,7 @@ def build_agent_workflow():
                     original_query = str(msg[1]).lower()
                     break
             
-            # Check what data we have
+            # Check what tools were called
             has_projection = any(
                 step[1] if isinstance(step, (list, tuple)) and len(step) == 2 else None
                 for step in state.get("intermediate_steps", [])
@@ -92,6 +95,8 @@ def build_agent_workflow():
                 if hasattr(step[0], "tool") and step[0].tool == "detect_fraud"
             )
             
+            print(f"🔍 Supervisor: Tool usage detected - has_projection={bool(has_projection)}, has_risk={bool(has_risk)}, has_fraud={bool(has_fraud)}")
+            
             # Enhanced decision logic for visualization
             should_visualize = (
                 "chart" in original_query or 
@@ -101,9 +106,12 @@ def build_agent_workflow():
                 "show me" in original_query or
                 "display" in original_query or
                 "plot" in original_query or
-                (has_projection and ("growth" in original_query or "time" in original_query or "progress" in original_query or "goal" in original_query or "retirement" in original_query or "pension" in original_query or "projection" in original_query)) or
-                (has_risk and "risk" in original_query) or
-                (has_fraud and "fraud" in original_query)
+                # More flexible visualization triggers
+                any(word in original_query.lower() for word in ["chart", "graph", "visual", "show", "display", "plot"]) or
+                # Only visualize for explicit visualization requests, not general queries
+                (has_projection and ("chart" in original_query or "graph" in original_query or "visual" in original_query)) or
+                (has_risk and ("chart" in original_query or "graph" in original_query)) or
+                (has_fraud and ("chart" in original_query or "graph" in original_query))
             )
             
             print(f"🔍 Supervisor Decision: original_query='{original_query}', should_visualize={should_visualize}")

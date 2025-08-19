@@ -4,6 +4,7 @@ Test the guardrails in the pension AI system
 """
 
 import re
+import json
 
 def test_guardrails():
     """Test the content guardrails"""
@@ -70,26 +71,166 @@ def test_guardrails():
     print("- 🛡️ Protection: System will reject inappropriate queries early")
 
 def test_workflow_guardrails():
-    """Test the full workflow with guardrails"""
+    """Test the full workflow with guardrails and context system"""
     try:
         from app.workflow import graph
+        from app.tools.tools import set_request_user_id, clear_request_user_id
         
-        print("\n🚀 Testing Full Workflow with Guardrails...")
+        print("🚀 Testing Full Workflow with Guardrails...")
         print("=" * 50)
         
-        # Test a query that should trigger guardrails
-        test_query = " I want to day trade with my pension for user 107?"
-        print(f"📝 Testing: {test_query}")
+        # Test 1: Guardrail Test (should block political content)
+        test_query = "What's the political impact on my pension for user 107?"
+        print(f"📝 Test 1 - Guardrail Test: {test_query}")
         
-        result = graph.invoke({'messages': [('user', test_query)]})
-        print(f"✅ Workflow completed!")
-        print(f"📊 Result keys: {list(result.keys())}")
+        try:
+            result = graph.invoke({'messages': [('user', test_query)]})
+            print(f"✅ Workflow completed!")
+            print(f"📊 Result keys: {list(result.keys())}")
+            
+            if 'final_response' in result:
+                summary = result['final_response'].get('summary', 'No summary')
+                print(f"📝 Summary: {summary[:200]}...")
+        except Exception as e:
+            print(f"❌ Error: {e}")
         
-        if 'final_response' in result:
-            summary = result['final_response'].get('summary', 'No summary')
-            print(f"📝 Summary: {summary[:200]}...")
+        print("\n" + "-" * 50)
         
-        print("\n🎯 Guardrail workflow test successful!")
+        # Test 2: Request Context-Based User ID (should work with context)
+        test_query = "What's my pension balance?"
+        print(f"📝 Test 2 - Request Context-Based User ID: {test_query}")
+        
+        # Simulate frontend authentication - set user_id in request context
+        set_request_user_id(102)  # This is what your FastAPI endpoint would do after JWT validation
+        print(f"🔍 Context: Set user_id=102 in request context")
+        
+        try:
+            result = graph.invoke({'messages': [('user', test_query)]})
+            print(f"✅ Workflow completed!")
+            print(f"📊 Result keys: {list(result.keys())}")
+            
+            if 'final_response' in result:
+                summary = result['final_response'].get('summary', 'No summary')
+                print(f"📝 Summary: {summary[:200]}...")
+                
+                # Check if charts were generated
+                charts = result.get('charts', {})
+                plotly_figs = result.get('plotly_figs', {})
+                if charts or plotly_figs:
+                    print(f"📊 Charts generated: {list(charts.keys())}")
+                    print(f"📊 Plotly figures: {list(plotly_figs.keys())}")
+                    
+                    # Show actual JSON output for frontend
+                    if plotly_figs:
+                        print(f"\n🎨 ACTUAL JSON OUTPUT FOR FRONTEND:")
+                        print(f"📊 Plotly Figures JSON:")
+                        for chart_name, chart_data in plotly_figs.items():
+                            print(f"\n📈 Chart: {chart_name}")
+                            print(f"JSON Data: {json.dumps(chart_data, indent=2)}")
+                    
+                    if charts:
+                        print(f"\n📊 Vega-Lite Charts JSON:")
+                        for chart_name, chart_data in charts.items():
+                            print(f"\n📈 Chart: {chart_name}")
+                            print(f"JSON Data: {json.dumps(chart_data, indent=2)}")
+                else:
+                    print(f"📊 No charts generated")
+        except Exception as e:
+            print(f"❌ Error: {e}")
+        finally:
+            # Clean up context (FastAPI would do this automatically)
+            clear_request_user_id()
+            print(f"🔍 Context: Cleared user_id from request context")
+        
+        print("\n" + "-" * 50)
+        
+        # Test 3: No User Context (should fail gracefully)
+        test_query = "Show me my risk profile"
+        print(f"📝 Test 3 - No User Context: {test_query}")
+        
+        try:
+            result = graph.invoke({'messages': [('user', test_query)]})
+            print(f"✅ Workflow completed!")
+            print(f"📊 Result keys: {list(result.keys())}")
+            
+            if 'final_response' in result:
+                summary = result['final_response'].get('summary', 'No summary')
+                print(f"📝 Summary: {summary[:200]}...")
+                
+                # Check if charts were generated
+                charts = result.get('charts', {})
+                plotly_figs = result.get('plotly_figs', {})
+                if charts or plotly_figs:
+                    print(f"📊 Charts generated: {list(charts.keys())}")
+                    print(f"📊 Plotly figures: {list(plotly_figs.keys())}")
+                    
+                    # Show actual JSON output for frontend
+                    if plotly_figs:
+                        print(f"\n🎨 ACTUAL JSON OUTPUT FOR FRONTEND:")
+                        print(f"📊 Plotly Figures JSON:")
+                        for chart_name, chart_data in plotly_figs.items():
+                            print(f"\n📈 Chart: {chart_name}")
+                            print(f"JSON Data: {json.dumps(chart_data, indent=2)}")
+                    
+                    if charts:
+                        print(f"\n📊 Vega-Lite Charts JSON:")
+                        for chart_name, chart_data in charts.items():
+                            print(f"\n📈 Chart: {chart_name}")
+                            print(f"JSON Data: {json.dumps(chart_data, indent=2)}")
+                else:
+                    print(f"📊 No charts generated")
+        except Exception as e:
+            print(f"❌ Error: {e}")
+        
+        print("\n" + "-" * 50)
+        
+        # Test 4: Visualizer Agent Test (should generate charts)
+        test_query = "Show me a chart of my risk profile"
+        print(f"📝 Test 4 - Visualizer Agent Test: {test_query}")
+        
+        # Set user context for this test
+        set_request_user_id(102)
+        print(f"🔍 Context: Set user_id=102 in request context")
+        
+        try:
+            result = graph.invoke({'messages': [('user', test_query)]})
+            print(f"✅ Workflow completed!")
+            print(f"📊 Result keys: {list(result.keys())}")
+            
+            if 'final_response' in result:
+                summary = result['final_response'].get('summary', 'No summary')
+                print(f"📝 Summary: {summary[:200]}...")
+            
+            # Check if charts were generated
+            charts = result.get('charts', {})
+            plotly_figs = result.get('plotly_figs', {})
+            if charts or plotly_figs:
+                print(f"📊 Charts generated: {list(charts.keys())}")
+                print(f"📊 Plotly figures: {list(plotly_figs.keys())}")
+                
+                # Show actual JSON output for frontend
+                if plotly_figs:
+                    print(f"\n🎨 ACTUAL JSON OUTPUT FOR FRONTEND:")
+                    print(f"📊 Plotly Figures JSON:")
+                    for chart_name, chart_data in plotly_figs.items():
+                        print(f"\n📈 Chart: {chart_name}")
+                        print(f"JSON Data: {json.dumps(chart_data, indent=2)}")
+                
+                if charts:
+                    print(f"\n📊 Vega-Lite Charts JSON:")
+                    for chart_name, chart_data in charts.items():
+                        print(f"\n📈 Chart: {chart_name}")
+                        print(f"JSON Data: {json.dumps(chart_data, indent=2)}")
+            else:
+                print(f"📊 No charts generated")
+                
+        except Exception as e:
+            print(f"❌ Error: {e}")
+        finally:
+            clear_request_user_id()
+            print(f"🔍 Context: Cleared user_id from request context")
+        
+        print("\n" + "-" * 50)
         
     except Exception as e:
         print(f"❌ Error testing workflow: {e}")

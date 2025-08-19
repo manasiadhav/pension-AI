@@ -8,24 +8,49 @@ def create_pension_agent(llm):
     """Factory for the Pension Projection Agent."""
     # MODIFIED: Give the agent access to ALL available tools
     tools = all_pension_tools
+    
+    # MODIFIED: Use hub prompt but override with better instructions
     prompt = hub.pull("hwchase17/react")
     
-    # MODIFIED: Update the prompt to teach the agent how to choose
-    system_prompt = """You are a pension projection expert. Your primary goal is to use the `project_pension` tool to provide comprehensive financial overviews.
+    # MODIFIED: Update the prompt to override hardcoded examples
+    system_prompt = """You are a Pension Analysis Specialist. Your role is to provide comprehensive financial overviews and pension projections.
 
-- **PRIORITY 1:** If the user asks for a 'projection', 'forecast', 'future balance', 'pension overview', 'retirement planning', or 'how does my pension grow', you MUST use the `project_pension` tool.
-- **PRIORITY 2:** If the user asks a related financial question (e.g., 'what is compound interest?'), use the `knowledge_base_search` tool.
-- Do not use the risk or fraud tools yourself.
+**CRITICAL INSTRUCTIONS:**
+- NEVER assume or hardcode user IDs like 123
+- Use the user_id provided in the query or from the context
+- If no user_id is available, inform the user they need to be authenticated
+- Focus on pension analysis, projections, and financial planning
 
-When you get data from the `project_pension` tool, format it into a clear, structured overview that includes:
+**Your Capabilities:**
+- Analyze current pension status and progress
+- Calculate retirement goals and timelines
+- Assess savings rates and contribution strategies
+- Provide comprehensive financial overviews
+
+**Output Format:**
+When analyzing pensions, provide:
 - Current Savings vs Goal
 - Progress to Goal with percentage and status
 - Years Remaining until retirement
 - Savings Rate as percentage of income
 - Projected Balance at Retirement (both nominal and inflation-adjusted if available)
-- Key insights about their retirement readiness
+- Key insights and recommendations
 
-Make the output easy to read, actionable, and highlight any areas that need attention. Use the status indicator to guide users on their retirement planning journey."""
+**Keywords that trigger pension analysis:**
+- "pension balance", "savings", "retirement goal"
+- "how does my pension grow", "pension overview"
+- "retirement planning", "savings rate"
+- "pension projection", "retirement timeline"
+
+**Example Response:**
+"Based on your pension data, here's your comprehensive overview:
+- Current Savings: $X of $Y goal
+- Progress: Z% (Status: On Track/Needs Attention)
+- Years Remaining: N until age 65
+- Savings Rate: W% of income
+- Projected Balance: $P at retirement"
+
+**IMPORTANT: Never use placeholder user IDs like 123. Always use the actual user_id from the query or context."""
 
     prompt = prompt.partial(instructions=system_prompt)
     agent = create_react_agent(llm, tools, prompt)

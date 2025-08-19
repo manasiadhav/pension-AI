@@ -1,7 +1,7 @@
 # main.py
 from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordRequestForm, HTTPBearer
 from sqlalchemy.orm import Session
 from datetime import timedelta
 import os
@@ -30,7 +30,10 @@ class FinalSummaryResponse(BaseModel):
 class ChatRequest(BaseModel):
     query: str
 
-app = FastAPI(title="Pension AI")
+# Import the context management functions
+from .tools.tools import set_request_user_id, clear_request_user_id
+
+app = FastAPI(title="Pension AI API", version="1.0.0")
 
 # ---------------------------
 # CORS
@@ -210,56 +213,90 @@ async def upload_pension_document(
 # -----------------------------------------------------------------
 # --- NEW SECTION 2: AI Agent Chat Endpoint ---
 # -----------------------------------------------------------------
+security = HTTPBearer()
+
+# Models
+class ChatRequest(BaseModel):
+    message: str
+
+class FinalSummaryResponse(BaseModel):
+    summary: str
+    chart_data: Optional[Dict[str, Any]] = None
+    plotly_figures: Optional[Dict[str, Any]] = None
+    chart_images: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+# Authentication dependency (this is what you'd implement for production)
+async def get_current_user_id(token: str = Depends(security)) -> int:
+    """
+    Extract user_id from JWT token.
+    This is where you'd implement your actual JWT validation logic.
+    """
+    try:
+        # TODO: Implement actual JWT validation here
+        # For now, we'll simulate by extracting from the token
+        # In production, you'd decode the JWT and verify it
+        
+        # Simulate JWT decoding (replace with real implementation)
+        if token.credentials == "valid_token_102":
+            return 102
+        elif token.credentials == "valid_token_103":
+            return 103
+        else:
+            raise HTTPException(status_code=401, detail="Invalid token")
+            
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+
 @app.post("/chat", response_model=FinalSummaryResponse)
-async def agent_chat(
+async def chat_endpoint(
     request: ChatRequest,
-    current_user: models.User = Depends(security.get_current_user)
+    current_user_id: int = Depends(get_current_user_id)
 ):
     """
-    Main endpoint to interact with the multi-agent AI system.
-    It takes a user query, passes it to the agent graph, and returns a structured response.
+    Main chat endpoint that processes pension queries.
+    Uses request-scoped context for user authentication.
     """
-    # Pass the authenticated user's ID and role to the agent system for context
-    query_with_context = f"User Info: id={current_user.id}, role={current_user.role}. Query: {request.query}"
-    
-    # Use the imported 'graph' to get the final result
-    result = graph.invoke({"messages": [("user", query_with_context)]})
-    
-    # Extract the final response from the workflow result
-    final_response = result.get("final_response", {})
-    
-    if final_response:
-        # Return structured response with chart data
-        return FinalSummaryResponse(
-            summary=final_response.get("summary", "Analysis completed."),
-            chart_data=final_response.get("charts", {}),
-            plotly_figures=final_response.get("plotly_figs", {}),
-            chart_images=final_response.get("chart_images", {}),
-            metadata={
-                "user_id": current_user.id,
-                "user_role": current_user.role,
-                "query": request.query,
-                "workflow_completed": True
-            }
-        )
-    else:
-        # Fallback: extract summary from messages
-        messages = result.get("messages", [])
-        summary = ""
-        for msg in reversed(messages):
-            if hasattr(msg, 'content') and not msg.content.startswith('[Tools executed]'):
-                summary = msg.content
-                break
+    try:
+        # Set user context for this request
+        set_request_user_id(current_user_id)
         
+        # Import and call the workflow
+        from .workflow import graph
+        result = graph.invoke({'messages': [('user', request.message)]})
+        
+        # Extract the final response
+        final_response = result.get('final_response', {})
+        
+        # Return structured response
         return FinalSummaryResponse(
-            summary=summary or "Analysis completed.",
+            summary=final_response.get('summary', 'No summary available'),
+            chart_data=final_response.get('charts', {}),
+            plotly_figures=final_response.get('plotly_figs', {}),
+            chart_images=final_response.get('chart_images', {}),
             metadata={
-                "user_id": current_user.id,
-                "user_role": current_user.role,
-                "query": request.query,
-                "workflow_completed": True
+                'user_id': current_user_id,
+                'query': request.message,
+                'workflow_completed': True
             }
         )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Workflow error: {str(e)}")
+    
+    finally:
+        # Clean up request context
+        clear_request_user_id()
+
+@app.get("/auth/status")
+async def auth_status(current_user_id: int = Depends(get_current_user_id)):
+    """Check authentication status"""
+    return {"authenticated": True, "user_id": current_user_id}
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "service": "Pension AI API"}
 
 # -----------------------------------------------------------------
 # --- NEW SECTION 3: Optional Streaming Chat Endpoint ---
