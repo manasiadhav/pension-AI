@@ -5,6 +5,7 @@ from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
 from functools import partial
 from langgraph.graph.message import add_messages
+import re # Added for guardrail logic
 
 # Import all our modular components
 from .tools.tools import all_pension_tools
@@ -116,7 +117,85 @@ def build_agent_workflow():
                 return {"next": "summarizer", "turns": state.get("turns", 0)}
         
         # First pass - route to specialist agents based on user query
-        resp = supervisor_chain_runnable.invoke({"messages": state["messages"]})
+        # Apply guardrails first
+        user_query = ""
+        for msg in state["messages"]:
+            if isinstance(msg, HumanMessage):
+                user_query = msg.content
+                break
+            elif isinstance(msg, dict) and str(msg.get("role", "")) == "user":
+                user_query = msg.get("content", "")
+                break
+            elif isinstance(msg, tuple) and len(msg) >= 2 and str(msg[0]) == "user":
+                user_query = msg[1]
+                break
+        
+        # Check for blocked content
+        blocked_patterns = {
+            'religious': [
+                r'\b(pray|prayer|god|jesus|allah|buddha|hindu|islam|christian|jewish|religious|spiritual|faith|blessing|divine|heaven|hell)\b',
+                r'\b(amen|hallelujah|om|namaste|shalom|salaam)\b',
+                r'\b(church|mosque|temple|synagogue|worship|meditation)\b'
+            ],
+            'political': [
+                r'\b(democrat|republican|liberal|conservative|left|right|wing|party|election|vote|campaign|politician|senator|congress|president)\b',
+                r'\b(government|administration|policy|legislation|bill|law|regulation)\b',
+                r'\b(progressive|moderate|radical|extremist|activist|protest|rally)\b',
+                r'\bpolitic\w*\b'  # political, politics
+            ],
+            'investment_strategy': [
+                r'\b(buy|sell|hold|stock|shares|equity|market|timing|entry|exit|position|portfolio|allocation)\b',
+                r'\b(day trading|swing trading|momentum|value|growth|dividend|yield)\b',
+                r'\b(cryptocurrency|bitcoin|ethereum|blockchain|ico|token|coin)\b',
+                r'\b(real estate|property|mortgage|loan|credit|debt|leverage)\b',
+                r'\b(hedge fund|private equity|venture capital|startup|ipo|merger|acquisition)\b'
+            ]
+        }
+        
+        # Check for blocked content
+        should_block = False
+        blocked_category = ""
+        for category, patterns in blocked_patterns.items():
+            for pattern in patterns:
+                if re.search(pattern, user_query.lower()):
+                    should_block = True
+                    blocked_category = category
+                    break
+            if should_block:
+                break
+        
+        if should_block:
+            print(f"🔍 Supervisor: Guardrail triggered for {blocked_category} content")
+            # Create appropriate guardrail response
+            guardrail_response = (
+                "I apologize, but I cannot process this request. "
+                "I am a pension analysis system designed to help with: "
+                "• Pension projections and calculations "
+                "• Risk assessment and portfolio analysis "
+                "• Fraud detection and transaction monitoring "
+                "• Financial data visualization "
+                "\n\nI cannot provide advice on religious matters, political topics, "
+                "or specific investment strategies. Please rephrase your question "
+                "to focus on pension analysis, risk assessment, or fraud detection."
+            )
+            
+            return {
+                "next": "FINISH",  # Add routing to end workflow
+                "messages": state["messages"] + [AIMessage(content=guardrail_response)],
+                "final_response": {
+                    "summary": guardrail_response,
+                    "charts": {},
+                    "plotly_figs": {},
+                    "chart_images": {}
+                }
+            }
+        
+        # If no guardrail violation, proceed with normal routing
+        if hasattr(supervisor_chain_runnable, 'invoke'):
+            resp = supervisor_chain_runnable.invoke({"messages": state["messages"]})
+        else:
+            # Support function-style runnables
+            resp = supervisor_chain_runnable({"messages": state["messages"]})
         if isinstance(resp, dict):
             next_value = resp.get("next") or resp.get("output") or resp.get("text")
         else:

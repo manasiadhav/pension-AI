@@ -11,7 +11,14 @@ from .. import models
 from ..chromadb_service import get_or_create_collection, query_collection
 from langchain_google_genai import ChatGoogleGenerativeAI
 import os
-os.environ["GOOGLE_API_KEY"] = os.getenv("GEMINI_API_KEY")  # Set Google API key for LangChain
+
+# Set Google API key for LangChain with fallback
+gemini_key = os.getenv("GEMINI_API_KEY")
+if gemini_key:
+    os.environ["GOOGLE_API_KEY"] = gemini_key
+else:
+    # Set a dummy key for testing (will fail gracefully)
+    os.environ["GOOGLE_API_KEY"] = "dummy_key_for_testing"
 
 json_llm = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash",
